@@ -4,16 +4,28 @@ require_once(dirname(__FILE__) . '/common_functions.php');
 require_once(dirname(__FILE__,2) . '/libs/symfony/autoload.php');
 require_once(dirname(__FILE__,2) . '/libs/qr_barcode/qrcode.php');
 require_once(dirname(__FILE__,2) . '/libs/qr_barcode/barcode.php');
+
 use Symfony\Component\Mailer\Transport;
 use Symfony\Component\Mailer\Mailer;
 use Symfony\Component\Mime\Email;
+
 if(isSessionValid() == false)
 	die("Access denied");
-//-------------------------------------------------------
+
 date_default_timezone_set('UTC');
 $entry_time = (new DateTime())->format('d-m-Y h:i A');
 header('Content-Type: application/json');
 
+/* -------------------------------------------------------------------------------------------
+   1) DEFINITION isValidEmail() – FEHLENDE FUNKTION ERGÄNZT
+------------------------------------------------------------------------------------------- */
+function isValidEmail($email){
+    return (bool) filter_var($email, FILTER_VALIDATE_EMAIL);
+}
+
+/* -------------------------------------------------------------------------------------------
+   2) HAUPT-BEFEHLSBLOCK POST
+------------------------------------------------------------------------------------------- */
 if (isset($_POST)) {
 	$POSTJ = json_decode(file_get_contents('php://input'),true);
 
@@ -76,7 +88,10 @@ if (isset($_POST)) {
 	}
 }
 
-//-----------------------------
+/* -------------------------------------------------------------------------------------------
+   3) FUNKTIONEN FÜR USER GROUP, CSV-IMPORT ETC.
+------------------------------------------------------------------------------------------- */
+
 function addUserToTable($conn, &$POSTJ){
 	$user_group_id = $POSTJ['user_group_id'];
 	$user_group_name = $POSTJ['user_group_name'];
@@ -85,7 +100,7 @@ function addUserToTable($conn, &$POSTJ){
 
 	$row = getUserGroupFromGroupId($conn, $user_group_id);
 	if(empty($row) || empty($row["user_data"]))
-		$user_data =[];
+		$user_data = [];
 	else
 		$user_data = json_decode($row["user_data"],true);
 
@@ -135,8 +150,14 @@ function updateUser($conn, &$POSTJ){
 		$user_data = json_decode($row["user_data"],true);
 
 		$index = array_search($uid, array_column($user_data, 'uid'));
-		if($index !== false ){	//returns false if not found
-			$user_data[$index]= ['uid'=>$uid, 'fname'=>$POSTJ['fname'], 'lname'=>$POSTJ['lname'], 'email'=>$POSTJ['email'], 'notes'=>$POSTJ['notes']];
+		if($index !== false ){
+			$user_data[$index]= [
+				'uid'=>$uid,
+				'fname'=>$POSTJ['fname'],
+				'lname'=>$POSTJ['lname'],
+				'email'=>$POSTJ['email'],
+				'notes'=>$POSTJ['notes']
+			];
 			$user_data = json_encode($user_data);
 			$stmt = $conn->prepare("UPDATE tb_core_mailcamp_user_group SET user_data=? WHERE user_group_id=?");
 			$stmt->bind_param('ss', $user_data,$user_group_id);
@@ -149,7 +170,7 @@ function updateUser($conn, &$POSTJ){
 			echo(json_encode(['result' => 'failed', 'error' => 'Error updating row. User not found!']));
 	}
 	else
-		echo(json_encode(['result' => 'failed', 'error' => 'Error updating row. User group not found!']));	
+		echo(json_encode(['result' => 'failed', 'error' => 'Error updating row. User group not found!']));
 }
 
 function deleteUser($conn, $user_group_id, $uid){
@@ -162,7 +183,7 @@ function deleteUser($conn, $user_group_id, $uid){
 		$user_data = json_decode($row["user_data"],true);
 
 		$index = array_search($uid, array_column($user_data, 'uid'));
-		if($index !== false ){	//returns false if not found
+		if($index !== false ){
 			unset($user_data[$index]);
 			$user_data = json_encode($user_data);
 			$stmt = $conn->prepare("UPDATE tb_core_mailcamp_user_group SET user_data=? WHERE user_group_id=?");
@@ -175,7 +196,7 @@ function deleteUser($conn, $user_group_id, $uid){
 			echo(json_encode(['result' => 'failed', 'error' => 'Error deleting row. User not found!']));
 	}
 	else
-		echo(json_encode(['result' => 'failed', 'error' => 'Error deleting row. User group not found!']));	
+		echo(json_encode(['result' => 'failed', 'error' => 'Error deleting row. User group not found!']));
 }
 
 function downloadUser($conn, $user_group_id){
@@ -201,7 +222,7 @@ function downloadUser($conn, $user_group_id){
 	    fpassthru($f);
 	}
 	else
-		echo(json_encode(['result' => 'failed', 'error' => 'Error updating row. User group not found!']));	
+		echo(json_encode(['result' => 'failed', 'error' => 'Error updating row. User group not found!']));
 }
 
 function getUserGroupList($conn){
@@ -210,7 +231,7 @@ function getUserGroupList($conn){
 	$result = mysqli_query($conn, "SELECT user_group_id,user_group_name,JSON_LENGTH(user_data) as user_count,date FROM tb_core_mailcamp_user_group");
 	if(mysqli_num_rows($result) > 0){
 		foreach (mysqli_fetch_all($result, MYSQLI_ASSOC) as $row){
-			$row["user_data"] = json_decode($row["user_data"]);	//avoid double json encoding
+			$row["user_data"] = json_decode($row["user_data"]);	
 			$row["date"] = getInClientTime_FD($DTime_info,$row['date'],null,'d-m-Y h:i A');
         	array_push($resp,$row);
 		}
@@ -225,27 +246,47 @@ function uploadUserCVS($conn, &$POSTJ){
 	$user_group_name = $POSTJ['user_group_name'];
 	$user_data = explode("\n", $POSTJ['user_data']);
 	array_shift($user_data);	//removes column heading 
-	$user_data = array_map('trim', $user_data);	//trim array strings
-	$user_data = array_filter(($user_data));	//removes empty array
+	$user_data = array_map('trim', $user_data);
+	$user_data = array_filter($user_data);	//removes empty lines
 	$arr_users=[];
 
 	foreach ($user_data as $user) {
 		$user = explode(",", $user);
+
 		$uid = getRandomStr(10);
 
-		if(isValidEmail($user[1]))
-	    	array_push($arr_users,['uid'=>$uid, 'fname'=>$user[0], 'lname'=>null, 'email'=>$user[1], 'notes'=>$user[2]]);
-    	elseif(isValidEmail($user[2]))
-	    	array_push($arr_users,['uid'=>$uid, 'fname'=>$user[0], 'lname'=>$user[1], 'email'=>$user[2], 'notes'=>$user[3]]);
-    	else
-    		die(json_encode(['result' => 'failed', 'error' => 'Import failed. Invalid email at '. $user[2]]));
+		// Wir prüfen, ob Spalte[1] oder Spalte[2] eine gültige E-Mail ist
+		// Du kannst hier deine Logik anpassen, z.B. "Vorname,Nachname,Email,Notes"
+		if(isset($user[1]) && isValidEmail($user[1])) {
+			array_push($arr_users, [
+				'uid'=>$uid,
+				'fname'=>$user[0],
+				'lname'=> (isset($user[2]) && !isValidEmail($user[2])) ? $user[2] : null,
+				'email'=> $user[1],
+				'notes'=> (isset($user[3])) ? $user[3] : ''
+			]);
+		}
+		elseif(isset($user[2]) && isValidEmail($user[2])) {
+			array_push($arr_users, [
+				'uid'=>$uid,
+				'fname'=>$user[0],
+				'lname'=>$user[1],
+				'email'=>$user[2],
+				'notes'=>(isset($user[3])) ? $user[3] : ''
+			]);
+		}
+		else {
+			die(json_encode([
+				'result' => 'failed',
+				'error' => 'Import failed. Invalid email in row: '. implode(",", $user)
+			]));
+		}
 	}
 
 	$row = getUserGroupFromGroupId($conn, $user_group_id);
+	$old_user_data = [];
 	if(!empty($row['user_data']))
 		$old_user_data = json_decode($row["user_data"],true);
-	else
-		$old_user_data = [];
 
 	$user_data = array_merge($old_user_data,$arr_users);
 	$user_data = json_encode($user_data);
@@ -262,46 +303,57 @@ function uploadUserCVS($conn, &$POSTJ){
 	if($stmt->execute() === TRUE){
 		echo(json_encode(['result' => 'success']));	
 	}
-	else 
+	else {
 		echo(json_encode(['result' => 'failed', 'error' => 'Error importing user data!']));
+	}
 }
 
+/* -------------------------------------------------------------------------------------------
+   4) "getUserGroupFromGroupIdTable" – Abfangen von NULL
+------------------------------------------------------------------------------------------- */
 function getUserGroupFromGroupIdTable($conn,&$POSTJ){
 	$offset = htmlspecialchars($POSTJ['start']);
 	$limit = htmlspecialchars($POSTJ['length']);
 	$draw = htmlspecialchars($POSTJ['draw']);
 	$search_value = htmlspecialchars($POSTJ['search']['value']);
-	$data = array();
-	$columnSortOrder = $POSTJ['order'][0]['dir'] == 'asc'?'asc':'desc'; // asc or desc
-	$totalRecords = 0;
+	$columnSortOrder = $POSTJ['order'][0]['dir'] == 'asc'?'asc':'desc'; 
 	$user_group_id = $POSTJ['user_group_id'];
 
-	if(empty($search_value))
-		$totalRecords_with_filter = $totalRecords;
-	else
-		$totalRecords_with_filter = 0;	//will be updated from below
-
-	$arr_filtered=[];
 	$row = getUserGroupFromGroupId($conn, $user_group_id);
 
 	if(!empty($row)){
 		$user_data = json_decode($row["user_data"],true);
-		foreach ($user_data as $item){
-		    $m_array = preg_grep('/.*'.$search_value.'.*/', $item);
-		    if(!empty($m_array))
-		    	array_push($arr_filtered, $item);
+
+		// Falls decode null liefert oder leer -> setze $user_data=[]
+		if(!is_array($user_data)) {
+			$user_data = [];
 		}
 
-		$totalRecords = empty($row['user_data'])?0:sizeof($user_data);
+		$arr_filtered = [];
+
+		if(empty($search_value)){
+			$arr_filtered = $user_data;
+		} else {
+			// Filtern
+			foreach ($user_data as $item){
+			    // In allen Feldern nach search_value suchen
+			    $m_array = preg_grep('/'.preg_quote($search_value).'/i', $item);
+			    if(!empty($m_array))
+			    	array_push($arr_filtered, $item);
+			}
+		}
+
+		$totalRecords = sizeof($user_data);
 		$totalRecords_with_filter = sizeof($arr_filtered);
+
 		$resp = array(
 		  "draw" => intval($draw),
 		  "recordsTotal" => intval($totalRecords),
 		  "recordsFiltered" => intval($totalRecords_with_filter),
-		  "data" => array_slice($arr_filtered, $offset, $limit)
+		  "data" => array_slice($arr_filtered, $offset, $limit),
+		  "user_group_name" => $row['user_group_name']
 		);
 
-		$resp['user_group_name'] = $row['user_group_name'];
 		echo json_encode($resp, JSON_INVALID_UTF8_IGNORE);
 	}		
 	else
@@ -340,7 +392,10 @@ function getUserGroupFromGroupId($conn, $user_group_id){
 		return $result->fetch_assoc();
 	return [];
 }
-//---------------------------------------Email Template Section --------------------------------
+
+/* -------------------------------------------------------------------------------------------
+   5) MAIL TEMPLATE FUNKTIONEN (unverändert, ausser du brauchst mehr Fixes)
+------------------------------------------------------------------------------------------- */
 
 function saveMailTemplate($conn,&$POSTJ){
 	$mail_template_id = $POSTJ['mail_template_id'];
@@ -377,7 +432,7 @@ function getMailTemplateList($conn){
 
 	if(mysqli_num_rows($result) > 0){
 		foreach (mysqli_fetch_all($result, MYSQLI_ASSOC) as $row){
-			$row["attachment"] = json_decode($row["attachment"]);	//avoid double json encoding
+			$row["attachment"] = json_decode($row["attachment"]);	
 			$row["date"] = getInClientTime_FD($DTime_info,$row['date'],null,'d-m-Y h:i A');
         	array_push($resp,$row);
 		}
@@ -459,7 +514,7 @@ function uploadAttachment($conn,&$POSTJ){
 		die(json_encode(['result' => 'failed', 'error' => 'Directory spear/uploads/attachments/ has no write permission']));
 
 	try{
-    	if(file_put_contents($target_file,$binary_data) || file_exists($target_file))	//if 0 size file failed, check if they exist (written)
+    	if(file_put_contents($target_file,$binary_data) || file_exists($target_file))
     		echo(json_encode(['result' => 'success', 'file_id' => $file_id]));	
     	else
 			echo(json_encode(['result' => 'failed', 'error' => 'File upload failed!']));	
@@ -484,16 +539,18 @@ function uploadMailBodyFiles($conn,&$POSTJ){
 		die(json_encode(['result' => 'failed', 'error' => 'Directory spear/uploads/attachments/ has no write permission']));
 
 	try{
-    	if(file_put_contents($target_file,$binary_data) || file_exists($target_file))	//if 0 size file failed, check if they exist (written)
+    	if(file_put_contents($target_file,$binary_data) || file_exists($target_file))
     		echo(json_encode(['result' => 'success', 'file_id' => $file_id, "mbf" => $file_id_part]));	
     	else
-    		echo(json_encode(['result' => 'failed', 'error' => $e->getMessage()]));	
+    		echo(json_encode(['result' => 'failed', 'error' => 'File upload failed!']));	
     }catch(Exception $e) {
-		echo(json_encode(['result' => 'failed', 'error' =>'File upload failed!']));	
+		echo(json_encode(['result' => 'failed', 'error' => $e->getMessage()]));	
 	}       
 }
 
-//---------------------------------------Sender List Section --------------------------------
+/* -------------------------------------------------------------------------------------------
+   6) SENDER LIST, VERIFY MAILBOX ETC. (unverändert)
+------------------------------------------------------------------------------------------- */
 function saveSenderList($conn, &$POSTJ){
 	$sender_list_id = $POSTJ['sender_list_id'];
 	$sender_list_mail_sender_name = $POSTJ['sender_list_mail_sender_name'];
@@ -507,11 +564,11 @@ function saveSenderList($conn, &$POSTJ){
 	$dsn_type = $POSTJ['dsn_type'];
 
 	if(checkAnIDExist($conn,$sender_list_id,'sender_list_id','tb_core_mailcamp_sender_list')){
-		if($sender_list_mail_sender_acc_pwd != ''){	//new sender acc pwd
+		if($sender_list_mail_sender_acc_pwd != ''){	
 			$stmt = $conn->prepare("UPDATE tb_core_mailcamp_sender_list SET sender_name=?, sender_SMTP_server=?, sender_from=?, sender_acc_username=?, sender_acc_pwd=?, auto_mailbox=?, sender_mailbox=?, cust_headers=?, dsn_type=? WHERE sender_list_id=?");
 			$stmt->bind_param('ssssssssss', $sender_list_mail_sender_name,$sender_list_mail_sender_SMTP_server,$sender_list_mail_sender_from,$sender_list_mail_sender_acc_username,$sender_list_mail_sender_acc_pwd,$auto_mailbox,$mail_sender_mailbox,$sender_list_cust_headers,$dsn_type,$sender_list_id);
 		}
-		else{	//sender acc pwd has no change
+		else{
 			$stmt = $conn->prepare("UPDATE tb_core_mailcamp_sender_list SET sender_name=?, sender_SMTP_server=?, sender_from=?, sender_acc_username=?, auto_mailbox=?, sender_mailbox=?, cust_headers=?, dsn_type=? WHERE sender_list_id=?");
 			$stmt->bind_param('sssssssss', $sender_list_mail_sender_name,$sender_list_mail_sender_SMTP_server,$sender_list_mail_sender_from,$sender_list_mail_sender_acc_username,$auto_mailbox,$mail_sender_mailbox,$sender_list_cust_headers,$dsn_type,$sender_list_id);
 		}
@@ -533,7 +590,7 @@ function getSenderList($conn){
 	$result = mysqli_query($conn, "SELECT sender_list_id,sender_name,sender_SMTP_server,sender_from,sender_acc_username,sender_mailbox,cust_headers,dsn_type,date FROM tb_core_mailcamp_sender_list");
 	if(mysqli_num_rows($result) > 0){
 		foreach (mysqli_fetch_all($result, MYSQLI_ASSOC) as $row){
-			$row["cust_headers"] = json_decode($row["cust_headers"]);	//avoid double json encoding
+			$row["cust_headers"] = json_decode($row["cust_headers"]);
 			$row["date"] = getInClientTime_FD($DTime_info,$row['date'],null,'d-m-Y h:i A');
         	array_push($resp,$row);
 		}
@@ -551,11 +608,11 @@ function getSenderFromSenderListId($conn, $sender_list_id){
 	$result = $stmt->get_result();
 	if($result->num_rows > 0){
 		$row = $result->fetch_assoc() ;
-		$row["cust_headers"] = json_decode($row["cust_headers"]);	//avoid double json encoding
+		$row["cust_headers"] = json_decode($row["cust_headers"]);
 		echo json_encode($row, JSON_INVALID_UTF8_IGNORE) ;
 	}			
 	else
-		echo json_encode(['error' => 'No data']);	
+		echo json_encode(['error' => 'No data']);
 	$stmt->close();
 }
 
@@ -594,22 +651,23 @@ function verifyMailboxAccess($conn, $POSTJ){
 		die(json_encode(['result' => 'failed', 'error' => "Sender list does not exist. Please fill the password field"]));	
 	else{
 		try{
-			$imap_obj = imap_open($sender_mailbox,$sender_username,$sender_pwd);		
+			$imap_obj = imap_open($sender_mailbox,$sender_username,$sender_pwd);
 	    	$resp = ['result' => 'success', 'total_msg_count' => imap_num_msg($imap_obj)];
 		} catch (Exception $e) {
 	  		$resp = ['result' => 'failed', 'error' =>$e->getMessage()];
 		}
 
-		$imap_err = imap_errors(); //required to capture imap errors
+		$imap_err = imap_errors();
 		if(!empty($imap_err))
-			$resp = ['result' => 'failed', 'error' => $imap_err];	
+			$resp = ['result' => 'failed', 'error' => $imap_err];
 	}	
 
 	echo json_encode($resp);
 }
 
-//---------------------------------------End Sender List Section --------------------------------
-//====================================================================================================
+/* -------------------------------------------------------------------------------------------
+   7) SEND MAIL VERIFICATION / SAMPLE
+------------------------------------------------------------------------------------------- */
 function sendTestMailVerification($conn,$POSTJ){
 	$sender_list_id = $POSTJ['sender_list_id'];
 	$smtp_server = $POSTJ['sender_list_mail_sender_SMTP_server'];
@@ -624,7 +682,6 @@ function sendTestMailVerification($conn,$POSTJ){
 	$dsn_type = $POSTJ['dsn_type'];
 	$message = (new Email());
 
-	//-----------------------------------
 	if(empty($sender_pwd))
 		$sender_pwd = getSenderPwd($conn, $sender_list_id);
 
@@ -646,7 +703,6 @@ function sendTestMailSample($conn,$POSTJ){
 	$mail_body = $POSTJ['mail_body'];
 	$mail_content_type = $POSTJ['mail_content_type'];
 	$mail_attachment = $POSTJ['attachments'];
-
 
 	$keyword_vals = array();
 	$serv_variables = getServerVariable($conn);
@@ -692,10 +748,10 @@ function sendTestMailSample($conn,$POSTJ){
 	    	$message->attachFromPath($file_path, $file_disp_name);
 	}
 
-	//---------------------------
 	shootMail($message,$smtp_server,$sender_username,$sender_pwd,$sender_from,$test_to_address,$cust_headers,$mail_subject,$mail_body,$mail_content_type);  
 }
-//===================================================================================================
+
+//--------------------------------------
 function getSenderPwd(&$conn, &$sender_list_id){
 	$stmt = $conn->prepare("SELECT sender_acc_pwd FROM tb_core_mailcamp_sender_list WHERE sender_list_id = ?");
 	$stmt->bind_param("s", $sender_list_id);
@@ -706,4 +762,5 @@ function getSenderPwd(&$conn, &$sender_list_id){
 	else
 		return "";
 }
+
 ?>
